@@ -353,20 +353,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
-    def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
-        """Save a newly created thread_id back into config.yaml so it persists across restarts."""
+    def _persist_dm_topic_field(self, chat_id: int, topic_name: str, field: str, value: Any) -> None:
+        """Set a field on a dm_topics entry in config.yaml and persist atomically."""
         try:
             from hermes_constants import get_hermes_home
+            from utils import atomic_yaml_write
             config_path = get_hermes_home() / "config.yaml"
             if not config_path.exists():
-                logger.warning("[%s] Config file not found at %s, cannot persist thread_id", self.name, config_path)
+                logger.warning("[%s] Config file not found at %s, cannot persist %s", self.name, config_path, field)
                 return
 
             import yaml as _yaml
             with open(config_path, "r") as f:
                 config = _yaml.safe_load(f) or {}
 
-            # Navigate to platforms.telegram.extra.dm_topics
             dm_topics = (
                 config.get("platforms", {})
                 .get("telegram", {})
@@ -381,20 +381,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 if int(chat_entry.get("chat_id", 0)) != int(chat_id):
                     continue
                 for t in chat_entry.get("topics", []):
-                    if t.get("name") == topic_name and not t.get("thread_id"):
-                        t["thread_id"] = thread_id
+                    if t.get("name") == topic_name and not t.get(field):
+                        t[field] = value
                         changed = True
                         break
 
             if changed:
-                with open(config_path, "w") as f:
-                    _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                atomic_yaml_write(config_path, config)
                 logger.info(
-                    "[%s] Persisted thread_id=%s for topic '%s' in config.yaml",
-                    self.name, thread_id, topic_name,
+                    "[%s] Persisted %s=%s for topic '%s' in config.yaml",
+                    self.name, field, value, topic_name,
                 )
         except Exception as e:
-            logger.warning("[%s] Failed to persist thread_id to config: %s", self.name, e, exc_info=True)
+            logger.warning("[%s] Failed to persist %s to config: %s", self.name, field, e, exc_info=True)
 
     async def _setup_dm_topics(self) -> None:
         """Load or create configured DM topics for specified chats.
@@ -435,36 +434,49 @@ class TelegramAdapter(BasePlatformAdapter):
                     continue
 
                 cache_key = f"{chat_id}:{topic_name}"
+                thread_id = None
 
-                # If thread_id is already persisted in config, just load into cache
                 existing_thread_id = topic_conf.get("thread_id")
                 if existing_thread_id:
-                    self._dm_topics[cache_key] = int(existing_thread_id)
-                    logger.info(
-                        "[%s] DM topic loaded from config: %s -> thread_id=%s",
-                        self.name, cache_key, existing_thread_id,
-                    )
-                    continue
-
-                # No persisted thread_id — create the topic via API
-                icon_color = topic_conf.get("icon_color")
-                icon_emoji = topic_conf.get("icon_custom_emoji_id")
-
-                thread_id = await self._create_dm_topic(
-                    chat_id=int(chat_id),
-                    name=topic_name,
-                    icon_color=icon_color,
-                    icon_custom_emoji_id=icon_emoji,
-                )
-
-                if thread_id:
+                    thread_id = int(existing_thread_id)
                     self._dm_topics[cache_key] = thread_id
                     logger.info(
-                        "[%s] DM topic cached: %s -> thread_id=%s",
+                        "[%s] DM topic loaded from config: %s -> thread_id=%s",
                         self.name, cache_key, thread_id,
                     )
-                    # Persist thread_id to config so we don't recreate on next restart
-                    self._persist_dm_topic_thread_id(int(chat_id), topic_name, thread_id)
+                else:
+                    thread_id = await self._create_dm_topic(
+                        chat_id=int(chat_id),
+                        name=topic_name,
+                        icon_color=topic_conf.get("icon_color"),
+                        icon_custom_emoji_id=topic_conf.get("icon_custom_emoji_id"),
+                    )
+                    if thread_id:
+                        self._dm_topics[cache_key] = thread_id
+                        logger.info(
+                            "[%s] DM topic cached: %s -> thread_id=%s",
+                            self.name, cache_key, thread_id,
+                        )
+                        self._persist_dm_topic_field(int(chat_id), topic_name, "thread_id", thread_id)
+
+                if thread_id and not topic_conf.get("greeted"):
+                    try:
+                        skill_name = topic_conf.get("skill")
+                        greeting = f"📌 Topic **{topic_name}** is ready."
+                        if skill_name:
+                            greeting += f"\nSkill: `{skill_name}`"
+                        await self._bot.send_message(
+                            chat_id=int(chat_id),
+                            text=greeting,
+                            message_thread_id=thread_id,
+                            parse_mode="Markdown",
+                        )
+                        self._persist_dm_topic_field(int(chat_id), topic_name, "greeted", True)
+                    except Exception as e:
+                        logger.warning(
+                            "[%s] Failed to send initial message to topic '%s': %s",
+                            self.name, topic_name, e,
+                        )
 
     async def connect(self) -> bool:
         """Connect to Telegram via polling or webhook.

@@ -3,7 +3,7 @@
 Covers:
 - _setup_dm_topics: loading persisted thread_ids from config
 - _setup_dm_topics: creating new topics via API when no thread_id
-- _persist_dm_topic_thread_id: saving thread_id back to config.yaml
+- _persist_dm_topic_field: saving fields back to config.yaml
 - _get_dm_topic_info: looking up topic config by thread_id
 - _cache_dm_topic_from_message: caching thread_ids from incoming messages
 - _build_message_event: DM topic resolution in message events
@@ -96,7 +96,7 @@ async def test_setup_dm_topics_creates_when_no_thread_id():
     adapter._bot.create_forum_topic.return_value = mock_topic
 
     # Mock the persist method so it doesn't touch the filesystem
-    adapter._persist_dm_topic_thread_id = MagicMock()
+    adapter._persist_dm_topic_field = MagicMock()
 
     await adapter._setup_dm_topics()
 
@@ -106,8 +106,8 @@ async def test_setup_dm_topics_creates_when_no_thread_id():
     )
     # Should be in cache
     assert adapter._dm_topics["222:NewTopic"] == 999
-    # Should persist
-    adapter._persist_dm_topic_thread_id.assert_called_once_with(222, "NewTopic", 999)
+    # Should persist thread_id
+    adapter._persist_dm_topic_field.assert_any_call(222, "NewTopic", "thread_id", 999)
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,7 @@ async def test_setup_dm_topics_mixed_persisted_and_new():
     adapter._bot = AsyncMock()
     mock_topic = SimpleNamespace(message_thread_id=777)
     adapter._bot.create_forum_topic.return_value = mock_topic
-    adapter._persist_dm_topic_thread_id = MagicMock()
+    adapter._persist_dm_topic_field = MagicMock()
 
     await adapter._setup_dm_topics()
 
@@ -198,11 +198,11 @@ async def test_create_dm_topic_returns_none_without_bot():
     assert result is None
 
 
-# ── _persist_dm_topic_thread_id ──
+# ── _persist_dm_topic_field ──
 
 
-def test_persist_dm_topic_thread_id_writes_config(tmp_path):
-    """Should write thread_id into the correct topic in config.yaml."""
+def test_persist_dm_topic_field_writes_config(tmp_path):
+    """Should write a field into the correct topic in config.yaml."""
     import yaml
 
     config_data = {
@@ -232,7 +232,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
-        adapter._persist_dm_topic_thread_id(111, "General", 999)
+        adapter._persist_dm_topic_field(111, "General", "thread_id", 999)
 
     with open(config_file) as f:
         result = yaml.safe_load(f)
@@ -242,8 +242,8 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     assert "thread_id" not in topics[1]  # "Work" should be untouched
 
 
-def test_persist_dm_topic_thread_id_skips_if_already_set(tmp_path):
-    """Should not overwrite an existing thread_id."""
+def test_persist_dm_topic_field_skips_if_already_set(tmp_path):
+    """Should not overwrite an existing field value."""
     import yaml
 
     config_data = {
@@ -271,7 +271,7 @@ def test_persist_dm_topic_thread_id_skips_if_already_set(tmp_path):
     adapter = _make_adapter()
 
     with patch.object(Path, "home", return_value=tmp_path):
-        adapter._persist_dm_topic_thread_id(111, "General", 999)
+        adapter._persist_dm_topic_field(111, "General", "thread_id", 999)
 
     with open(config_file) as f:
         result = yaml.safe_load(f)
